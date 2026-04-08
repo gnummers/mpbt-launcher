@@ -88,6 +88,7 @@ jobs:
           NEXT_PUBLIC_DEFAULT_SERVER: ${{ secrets.PROD_SERVER }}
           NEXT_PUBLIC_DEFAULT_API_URL: ${{ secrets.PROD_API_URL }}
         with:
+          tauriScript: npm run tauri:build
           tagName: ${{ steps.version.outputs.tag }}
           releaseName: 'MPBT Launcher ${{ steps.version.outputs.tag }}'
           releaseBody: |
