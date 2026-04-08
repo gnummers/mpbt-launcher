@@ -12,6 +12,7 @@
   "scripts": {
     "dev": "next dev --port 3010",
     "build": "next build",
+    "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "build:ddraw": "cmd /c \"cd native && build.bat\"",
