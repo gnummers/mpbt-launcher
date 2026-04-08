@@ -80,12 +80,15 @@ fn windowed_exe(original: &std::path::Path) -> Result<std::path::PathBuf, String
     // The check ends with: SUB EAX,0xa; CMP EAX,0x1; SBB EAX,EAX; NEG EAX; RET
     // (returns 1 iff original return value was exactly 10 = CRC match)
     // We replace the whole sequence with: MOV EAX,1; NOP×5; RET
-    const CRC_PATTERN: [u8; 11] = [0x83, 0xE8, 0x0A, 0x83, 0xF8, 0x01,
-                                    0x19, 0xC0, 0xF7, 0xD8, 0xC3];
+    // SBB EAX,EAX is encoded as 0x19 0xC0 (v1.06) or 0x1B 0xC0 (v1.23).
+    const CRC_PATTERNS: [[u8; 11]; 2] = [
+        [0x83, 0xE8, 0x0A, 0x83, 0xF8, 0x01, 0x19, 0xC0, 0xF7, 0xD8, 0xC3],
+        [0x83, 0xE8, 0x0A, 0x83, 0xF8, 0x01, 0x1B, 0xC0, 0xF7, 0xD8, 0xC3],
+    ];
     const CRC_PATCH:   [u8; 11] = [0xB8, 0x01, 0x00, 0x00, 0x00, 0x90,
                                     0x90, 0x90, 0x90, 0x90, 0xC3];
     if let Some((off, _)) = data.windows(11).enumerate().find(|(_, w)| {
-        *w == CRC_PATTERN
+        CRC_PATTERNS.iter().any(|p| w == p)
     }) {
         data[off..off + 11].copy_from_slice(&CRC_PATCH);
     }
