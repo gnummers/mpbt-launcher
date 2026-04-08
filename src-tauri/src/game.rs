@@ -24,12 +24,14 @@ pub fn launch_game(
     let dest_ddraw = game_dir.join("ddraw.dll");
 
     if windowed {
-        // Windowed mode: write the embedded shim bytes into the game dir,
-        // but only if the file isn't already there — a prior instance may
-        // have the DLL open and locked (os error 32).
-        if !dest_ddraw.exists() {
-            std::fs::write(&dest_ddraw, DDRAW_DLL_BYTES)
-                .map_err(|e| format!("Failed to write ddraw.dll to game dir: {e}"))?;
+        // Windowed mode: write the embedded shim bytes into the game dir.
+        // If another instance already deployed the DLL and currently has it
+        // open, Windows may report a sharing violation (os error 32); treat
+        // that specific case as non-fatal and continue launching.
+        if let Err(e) = std::fs::write(&dest_ddraw, DDRAW_DLL_BYTES) {
+            if e.raw_os_error() != Some(32) {
+                return Err(format!("Failed to write ddraw.dll to game dir: {e}"));
+            }
         }
     } else {
         // Full-screen mode: remove our shim if present.
