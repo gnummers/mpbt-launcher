@@ -4,9 +4,12 @@
 ///   • The ddraw.dll shim is written into the game directory so the game runs
 ///     in a window (Windows DLL search order picks it up before system ddraw).
 ///   • A permanently-patched copy of the EXE (`<stem>_windowed.exe`) is created
-///     once alongside the original.  The patched copy has the single-instance
-///     guard removed (JZ → JMP, one byte) so multiple simultaneous instances
-///     are allowed.  The original is never modified.
+///     once alongside the original.  Two patches are applied to the copy:
+///     (a) the single-instance guard (JZ → JMP, one byte) so multiple
+///         simultaneous instances are allowed, and (b) the self-integrity CRC
+///         check bypass, because patching (a) changes the file's CRC which
+///         would otherwise cause a "Fatal startup error" on launch.
+///     The original is never modified.
 ///   • The patched copy is what gets launched.
 ///
 /// When `windowed` is false the ddraw shim is removed and the original
@@ -56,18 +59,36 @@ fn windowed_exe(original: &std::path::Path) -> Result<std::path::PathBuf, String
     let mut data = std::fs::read(original)
         .map_err(|e| format!("Failed to read game EXE: {e}"))?;
 
-    // Scan for the 7-byte guard pattern.
+    // Patch 1: single-instance guard (JZ → JMP).
+    // Pattern: TEST EAX,EAX; Jcc +0x15; PUSH 1; PUSH EAX
+    //          85 C0 [74|EB] 15 6A 01 50
     let found = data.windows(7).enumerate().find(|(_, w)| {
         w[0] == 0x85 && w[1] == 0xC0
             && (w[PATCH_IDX] == BYTE_JZ || w[PATCH_IDX] == BYTE_JMP)
             && w[3] == 0x15 && w[4] == 0x6A && w[5] == 0x01 && w[6] == 0x50
     });
-
     if let Some((offset, _)) = found {
         data[offset + PATCH_IDX] = BYTE_JMP;
     }
-    // If pattern not found the copy is still created — it just won't be patched,
-    // which is fine (launch will still work, just no multi-instance).
+
+    // Patch 2: self-integrity CRC check bypass.
+    // The game calls GetModuleFileNameA on itself, computes a CRC, and
+    // compares it against a stored expected value.  Since we changed a byte
+    // in this copy the CRC will never match — bypassing the check is the
+    // only practical option.
+    //
+    // The check ends with: SUB EAX,0xa; CMP EAX,0x1; SBB EAX,EAX; NEG EAX; RET
+    // (returns 1 iff original return value was exactly 10 = CRC match)
+    // We replace the whole sequence with: MOV EAX,1; NOP×5; RET
+    const CRC_PATTERN: [u8; 11] = [0x83, 0xE8, 0x0A, 0x83, 0xF8, 0x01,
+                                    0x19, 0xC0, 0xF7, 0xD8, 0xC3];
+    const CRC_PATCH:   [u8; 11] = [0xB8, 0x01, 0x00, 0x00, 0x00, 0x90,
+                                    0x90, 0x90, 0x90, 0x90, 0xC3];
+    if let Some((off, _)) = data.windows(11).enumerate().find(|(_, w)| {
+        *w == CRC_PATTERN
+    }) {
+        data[off..off + 11].copy_from_slice(&CRC_PATCH);
+    }
 
     // Use create_new (O_CREAT | O_EXCL) so only one process wins the race.
     // If another launcher got here first, AlreadyExists means the copy is ready
