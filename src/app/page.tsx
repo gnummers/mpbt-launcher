@@ -181,8 +181,9 @@ export default function LauncherPage() {
     .replace(/\/api\/?$/, "");
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center bg-neutral-950 p-6">
-      <div className="w-full max-w-sm flex flex-col gap-4">
+    <main className="flex min-h-screen bg-neutral-950">
+      {/* ── Left column: login controls ── */}
+      <div className="flex flex-col gap-4 p-6 w-[360px] shrink-0 justify-center">
         {/* Header */}
         <div className="text-center">
           <h1 className="text-4xl font-bold tracking-widest text-green-400">
@@ -325,30 +326,33 @@ export default function LauncherPage() {
           </form>
         )}
 
-        {/* News section */}
-        {news.length > 0 && (
-          <div className="flex flex-col gap-2">
-            <p className="text-xs font-semibold uppercase tracking-widest text-neutral-600">
-              News
-            </p>
-            {news.map((article) => (
-              <div
-                key={article.slug}
-                className="rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3"
+      </div>
+
+      {/* ── Right column: news ── */}
+      <div className="flex flex-col flex-1 p-6 border-l border-neutral-800 gap-3 justify-center">
+        <p className="text-xs font-semibold uppercase tracking-widest text-neutral-600">
+          News
+        </p>
+        {news.length > 0 ? (
+          news.map((article) => (
+            <div
+              key={article.slug}
+              className="rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3"
+            >
+              <button
+                type="button"
+                onClick={() => openUrl(`${webBase}/articles/${article.slug}`)}
+                className="text-sm font-semibold text-green-400 hover:text-green-300 transition-colors text-left"
               >
-                <button
-                  type="button"
-                  onClick={() => openUrl(`${webBase}/articles/${article.slug}`)}
-                  className="text-sm font-semibold text-green-400 hover:text-green-300 transition-colors text-left"
-                >
-                  {article.title}
-                </button>
-                <p className="mt-1 text-xs text-neutral-500 leading-relaxed">
-                  {article.summary}
-                </p>
-              </div>
-            ))}
-          </div>
+                {article.title}
+              </button>
+              <p className="mt-1 text-xs text-neutral-500 leading-relaxed">
+                {article.summary}
+              </p>
+            </div>
+          ))
+        ) : (
+          <p className="text-xs text-neutral-700">No articles available.</p>
         )}
       </div>
     </main>
