@@ -59,9 +59,15 @@ jobs:
         run: npm ci
 
       # ── Native DLL ──────────────────────────────────────────────────────────
-      # build.bat uses vswhere to locate the MSVC toolchain automatically.
-      # The x86 cl.exe environment is scoped to the batch file's child process,
-      # so it does not interfere with the x64 Rust build that follows.
+      # Set up the x86 MSVC toolchain for the ddraw.dll build.
+      # ilammy/msvc-dev-cmd exports the cl.exe environment to the job; build.bat
+      # detects cl.exe on PATH and skips its own vcvarsall call, avoiding the
+      # "already-initialized" VsDevCmd.bat error seen on GitHub-hosted runners.
+      - name: Set up MSVC x86 toolchain
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x86
+
       - name: Build ddraw.dll (32-bit DirectDraw shim)
         run: npm run build:ddraw
 

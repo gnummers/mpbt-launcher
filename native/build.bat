@@ -23,8 +23,14 @@ if not exist %VCVARS% (
     exit /b 1
 )
 
+:: If cl.exe is already on PATH (e.g. set up by the CI ilammy/msvc-dev-cmd
+:: action) skip vcvarsall to avoid the VsDevCmd "already initialized" error.
+where cl.exe >nul 2>&1
+if %ERRORLEVEL% == 0 goto :build
+
 call %VCVARS% x86
 
+:build
 cl.exe /nologo /O2 /GS- /EHsc /LD ^
     "%~dp0ddraw.cpp" ^
     /Fe"%~dp0ddraw.dll" ^
