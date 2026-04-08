@@ -1,0 +1,39 @@
+{
+  "name": "mpbt-launcher",
+  "version": "0.1.0",
+  "description": "Game launcher for MPBT Solaris VII Revival — handles authentication, configuration, and launching MPBTWIN.EXE",
+  "author": "Ken Human",
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kenhuman/mpbt-launcher.git"
+  },
+  "scripts": {
+    "dev": "next dev --port 3010",
+    "build": "next build",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "build:ddraw": "cmd /c \"cd native && build.bat\"",
+    "tauri:dev:windowed": "npm run build:ddraw && tauri dev",
+    "tauri:build:windowed": "npm run build:ddraw && tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
+    "next": "^15.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "autoprefixer": "^10.4.0",
+    "postcss": "^8.4.0",
+    "tailwindcss": "^3.4.0",
+    "typescript": "^5.7.0"
+  }
+}

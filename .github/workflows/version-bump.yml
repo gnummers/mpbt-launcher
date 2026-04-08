@@ -1,0 +1,113 @@
+# Automatically bumps the version in all three config files when a PR targeting
+# master is opened or reopened.
+#
+# Default behaviour: minor bump (e.g. 0.1.0 → 0.2.0)
+#
+# Override by including one of these anywhere in the PR description:
+#
+#   @version patch            0.1.0 → 0.1.1
+#   @version minor            0.1.0 → 0.2.0   (default if omitted)
+#   @version major            0.1.0 → 1.0.0
+#   @version 1.2.3            sets an explicit version
+#
+# The commit is tagged "[skip ci]" so the release workflow does not fire.
+
+name: Version bump
+
+on:
+  pull_request:
+    types: [opened, reopened]
+    branches: [master]
+
+permissions:
+  contents: write   # required to push the bump commit to the PR branch
+
+jobs:
+  bump-version:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── Checkout the PR's head branch (not the merge commit) ──────────────
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Parse @version directive and calculate new version ─────────────────
+      - name: Resolve new version
+        id: resolve
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          # Extract first @version token from the PR body (case-insensitive)
+          DIRECTIVE=$(printf '%s' "$PR_BODY" | grep -oiP '(?<=@version )\S+' | head -1)
+
+          CURRENT=$(jq -r '.version' src-tauri/tauri.conf.json)
+          MAJ=$(echo "$CURRENT" | cut -d. -f1)
+          MIN=$(echo "$CURRENT" | cut -d. -f2)
+          PAT=$(echo "$CURRENT" | cut -d. -f3)
+
+          # Explicit semver overrides everything; named keywords bump that component
+          if printf '%s' "$DIRECTIVE" | grep -qP '^\d+\.\d+\.\d+$'; then
+            NEW="$DIRECTIVE"
+          elif [ "${DIRECTIVE,,}" = "major" ]; then
+            NEW="$((MAJ+1)).0.0"
+          elif [ "${DIRECTIVE,,}" = "patch" ]; then
+            NEW="${MAJ}.${MIN}.$((PAT+1))"
+          else
+            # "minor" keyword, unknown keyword, or no directive at all → minor bump
+            NEW="${MAJ}.$((MIN+1)).0"
+          fi
+
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "new=$NEW"         >> "$GITHUB_OUTPUT"
+          echo "directive=${DIRECTIVE:-<none — defaulting to minor>}"
+          echo "Bumping $CURRENT → $NEW"
+
+      # ── Update the three version files ────────────────────────────────────
+      - name: Apply version bump
+        if: steps.resolve.outputs.current != steps.resolve.outputs.new
+        env:
+          V: ${{ steps.resolve.outputs.new }}
+        run: |
+          # package.json
+          jq --arg v "$V" '.version = $v' package.json \
+            > _tmp && mv _tmp package.json
+
+          # tauri.conf.json
+          jq --arg v "$V" '.version = $v' src-tauri/tauri.conf.json \
+            > _tmp && mv _tmp src-tauri/tauri.conf.json
+
+          # Cargo.toml — replace the first `version = "…"` line (in [package])
+          sed -i "0,/^version = \"[^\"]*\"/{s/^version = \"[^\"]*\"/version = \"${V}\"/}" \
+            src-tauri/Cargo.toml
+
+          # Cargo.lock — update the [[package]] entry for mpbt-launcher
+          python3 - <<EOF
+          import re, os
+          v    = os.environ['V']
+          path = 'src-tauri/Cargo.lock'
+          txt  = open(path).read()
+          txt  = re.sub(
+              r'(\[\[package\]\]\nname = "mpbt-launcher"\nversion = ")[^"]*(")',
+              lambda m: m.group(1) + v + m.group(2),
+              txt,
+          )
+          open(path, 'w').write(txt)
+          EOF
+
+      # ── Commit and push ────────────────────────────────────────────────────
+      - name: Commit and push
+        if: steps.resolve.outputs.current != steps.resolve.outputs.new
+        env:
+          V: ${{ steps.resolve.outputs.new }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json \
+                  src-tauri/tauri.conf.json \
+                  src-tauri/Cargo.toml \
+                  src-tauri/Cargo.lock
+          git commit -m "chore: bump version to ${V} [skip ci]"
+          git push

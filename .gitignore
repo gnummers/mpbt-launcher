@@ -1,0 +1,37 @@
+# JS/Next.js
+node_modules/
+out/
+dist/
+.next/
+*.tsbuildinfo
+next-env.d.ts
+
+# Rust/Tauri
+src-tauri/target/
+.tauri
+
+# Native build artifacts (output of native/build.bat)
+native/*.obj
+native/*.exp
+native/*.lib
+native/*.dll
+native/*.exe
+
+# Bundled ddraw.dll (built by native/build.bat, not committed)
+src-tauri/ddraw.dll
+src-tauri/ddraw.lib
+src-tauri/ddraw.exp
+src-tauri/ddraw.obj
+
+# Env  (.env*.example files are committed as documentation templates)
+.env*
+!.env*.example
+
+# Development assets
+assets/
+
+# Misc
+.DS_Store
+*.pem
+npm-debug.log*
+

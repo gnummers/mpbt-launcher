@@ -1,0 +1,99 @@
+# Builds the MPBT Launcher and publishes a GitHub Release with the Windows
+# installer.  Triggered by every push to master (i.e. merged PR).
+#
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#   PROD_SERVER    — game server host:port  e.g. "mpbt.example.com:2000"
+#   PROD_API_URL   — auth API base URL      e.g. "https://api.mpbt.example.com"
+#
+# These are NOT sensitive (they are baked into the JS bundle in plaintext) but
+# are kept as secrets so production addresses stay out of source control.
+
+name: Release
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # required to create GitHub Releases
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      # ── Source ──────────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Derive version tag from tauri.conf.json ───────────────────────────
+      # The version-bump workflow keeps all config files in sync on PR open,
+      # so tauri.conf.json is always the source of truth after a merge.
+      # tauri-action will create this tag in the repo and attach the release to it.
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          TAG="v$(jq -r '.version' src-tauri/tauri.conf.json)"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Building release for $TAG"
+
+      # ── Toolchains ──────────────────────────────────────────────────────────
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Set up Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      # ── Dependencies ────────────────────────────────────────────────────────
+      - name: Install Node dependencies
+        run: npm ci
+
+      # ── Native DLL ──────────────────────────────────────────────────────────
+      # build.bat uses vswhere to locate the MSVC toolchain automatically.
+      # The x86 cl.exe environment is scoped to the batch file's child process,
+      # so it does not interfere with the x64 Rust build that follows.
+      - name: Build ddraw.dll (32-bit DirectDraw shim)
+        run: npm run build:ddraw
+
+      # ── Tauri production build + GitHub Release ──────────────────────────────
+      # tauri-action creates the git tag (steps.version.outputs.tag) in the repo
+      # and attaches all build artifacts to the GitHub Release.
+      - name: Build and release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signing keys — required to produce .sig files for the updater.
+          # TAURI_SIGNING_PRIVATE_KEY: contents of your .key file (not the path)
+          # TAURI_SIGNING_PRIVATE_KEY_PASSWORD: password you set when generating the key
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Production defaults baked into the Next.js bundle at compile time.
+          # Set PROD_SERVER and PROD_API_URL in repo secrets before releasing.
+          NEXT_PUBLIC_DEFAULT_SERVER: ${{ secrets.PROD_SERVER }}
+          NEXT_PUBLIC_DEFAULT_API_URL: ${{ secrets.PROD_API_URL }}
+        with:
+          tagName: ${{ steps.version.outputs.tag }}
+          releaseName: 'MPBT Launcher ${{ steps.version.outputs.tag }}'
+          releaseBody: |
+            ## Installation
+
+            Download the Windows installer below:
+
+            - **`MPBT.Launcher_*_x64-setup.exe`** — NSIS installer (recommended)
+            - **`MPBT.Launcher_*_x64_en-US.msi`** — MSI package
+
+            After installing, run **MPBT Launcher**, enter your credentials, and
+            set the path to your `MPBTWIN.EXE` under Advanced if it differs from
+            the default (`C:\MPBT\MPBTWIN.EXE`).
+          releaseDraft: true
+          prerelease: false
