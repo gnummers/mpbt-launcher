@@ -68,12 +68,21 @@ pub async fn launch_game(
         email    = info.email,
     );
 
-    // 4. Write play.pcgi into the game's directory
+    // 4. Write a per-user play.pcgi into the game's directory.
+    //    Using the username as part of the filename avoids a race condition
+    //    when two launcher instances are started close together: each writes
+    //    its own file and the game receives its own unique path via argv[1].
     let exe_path = std::path::Path::new(&game_exe);
     let game_dir = exe_path
         .parent()
         .ok_or("invalid game_exe path")?;
-    let pcgi_path = game_dir.join("play.pcgi");
+    // Sanitise username for use as a filename component: keep only
+    // alphanumeric characters and underscores, replace everything else.
+    let safe_user: String = username
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .collect();
+    let pcgi_path = game_dir.join(format!("play_{safe_user}.pcgi"));
     std::fs::write(&pcgi_path, pcgi)
         .map_err(|e| format!("Failed to write play.pcgi: {e}"))?;
 
