@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, FormEvent, InputHTMLAttributes, ChangeEventHandler } from "react";
 
 // The single URL of the MPBT website — all config is derived from it at runtime.
-const DEFAULT_WEB_URL = (process.env.NEXT_PUBLIC_WEB_URL ?? "http://localhost:3000").replace(/\/+$/, "");
+const DEFAULT_WEB_URL = (process.env.NEXT_PUBLIC_WEB_URL ?? "https://play-solaris.com").replace(/\/+$/, "");
 const DEFAULT_GAME    = "C:\\MPBT\\MPBTWIN.EXE";
 const STORAGE_KEY     = "mpbt_launcher_prefs";
 
@@ -147,7 +147,7 @@ export default function LauncherPage() {
 
     if (!base) {
       setConfigState("error");
-      setConfigError("Enter a Web URL like http://localhost:3000.");
+      setConfigError("Enter a Web URL like https://play-solaris.com.");
       setNews([]);
       return;
     }
@@ -157,7 +157,7 @@ export default function LauncherPage() {
       if (!parsed.hostname) throw new Error("missing-hostname");
     } catch {
       setConfigState("error");
-      setConfigError("Enter a valid Web URL like http://localhost:3000.");
+      setConfigError("Enter a valid Web URL like https://play-solaris.com.");
       setNews([]);
       return;
     }
@@ -350,7 +350,7 @@ export default function LauncherPage() {
                   id="webUrl"
                   value={webUrl}
                   onChange={(e) => setWebUrl(e.target.value)}
-                  placeholder="http://localhost:3000"
+                  placeholder="https://play-solaris.com"
                   disabled={busy}
                 />
                 <Field
