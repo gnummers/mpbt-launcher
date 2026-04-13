@@ -168,6 +168,21 @@ static void ReadConfig() {
 // Helpers
 // ============================================================================
 
+// Compute the destination rectangle for an aspect-correct scaled blit of
+// (srcW x srcH) into a window of (winW x winH).
+struct ScaleRect { int x, y, w, h; };
+static ScaleRect ComputeScaleRect(int srcW, int srcH, int winW, int winH) {
+    double scaleX = (double)winW / srcW;
+    double scaleY = (double)winH / srcH;
+    double scale  = (scaleX < scaleY) ? scaleX : scaleY;
+    ScaleRect r;
+    r.w = (int)(srcW * scale);
+    r.h = (int)(srcH * scale);
+    r.x = (winW - r.w) / 2;
+    r.y = (winH - r.h) / 2;
+    return r;
+}
+
 // Render the current back-buffer to an arbitrary DC, scaling to (winW x winH)
 // with aspect-correct letterboxing (black bars) if needed.
 static void RenderToHDC(HDC wdc, int winW, int winH) {
@@ -182,34 +197,52 @@ static void RenderToHDC(HDC wdc, int winW, int winH) {
         return;
     }
 
-    // Aspect-correct scale
-    double scaleX = (double)winW / srcW;
-    double scaleY = (double)winH / srcH;
-    double scale  = (scaleX < scaleY) ? scaleX : scaleY;
-    int dstW = (int)(srcW * scale);
-    int dstH = (int)(srcH * scale);
-    int dstX = (winW - dstW) / 2;
-    int dstY = (winH - dstH) / 2;
+    ScaleRect dst = ComputeScaleRect(srcW, srcH, winW, winH);
 
     // Fill letterbox bars with black
     HBRUSH black = (HBRUSH)GetStockObject(BLACK_BRUSH);
-    if (dstX > 0) {
-        RECT r1 = {0, 0, dstX, winH};
-        RECT r2 = {dstX + dstW, 0, winW, winH};
+    if (dst.x > 0) {
+        RECT r1 = {0, 0, dst.x, winH};
+        RECT r2 = {dst.x + dst.w, 0, winW, winH};
         FillRect(wdc, &r1, black);
         FillRect(wdc, &r2, black);
     }
-    if (dstY > 0) {
-        RECT r1 = {0, 0, winW, dstY};
-        RECT r2 = {0, dstY + dstH, winW, winH};
+    if (dst.y > 0) {
+        RECT r1 = {0, 0, winW, dst.y};
+        RECT r2 = {0, dst.y + dst.h, winW, winH};
         FillRect(wdc, &r1, black);
         FillRect(wdc, &r2, black);
     }
 
     SetStretchBltMode(wdc, HALFTONE);
     SetBrushOrgEx(wdc, 0, 0, nullptr);
-    StretchBlt(wdc, dstX, dstY, dstW, dstH,
+    StretchBlt(wdc, dst.x, dst.y, dst.w, dst.h,
                g_backDib.hdc, 0, 0, srcW, srcH, SRCCOPY);
+}
+
+// Transform a window-space mouse coordinate back to game (640x480) space.
+// Returns the remapped lParam; if outside the game area the coordinate is
+// clamped to the nearest edge so the game always receives a valid position.
+static LPARAM RemapMouseCoord(LPARAM lp) {
+    int winW = (g_targetW > 0) ? g_targetW : g_dispW;
+    int winH = (g_targetH > 0) ? g_targetH : g_dispH;
+    // No scaling active — pass through unchanged.
+    if (winW == g_dispW && winH == g_dispH) return lp;
+
+    int mx = (int)(short)LOWORD(lp);
+    int my = (int)(short)HIWORD(lp);
+
+    ScaleRect dst = ComputeScaleRect(g_dispW, g_dispH, winW, winH);
+
+    // Map from window coords into game coords
+    int gx = (dst.w > 0) ? (mx - dst.x) * g_dispW / dst.w : 0;
+    int gy = (dst.h > 0) ? (my - dst.y) * g_dispH / dst.h : 0;
+
+    // Clamp to valid game area
+    if (gx < 0) gx = 0; else if (gx >= g_dispW) gx = g_dispW - 1;
+    if (gy < 0) gy = 0; else if (gy >= g_dispH) gy = g_dispH - 1;
+
+    return MAKELPARAM(gx, gy);
 }
 
 // Known addresses inside MPBTWIN.EXE (.data segment, image base 0x00400000)
@@ -243,10 +276,21 @@ static void BlitToWindow() {
 // Bit 1 of the flags word is the WinMain quit flag.
 #define GAME_FLAGS_ADDR_QUIT_BIT 0x02
 
-// Subclass WndProc: handle WM_PAINT from our DIB; suppress WM_ACTIVATEAPP
-// deactivation so the game's rendering-enable bit (bit 0) stays set in
-// windowed mode; force-quit when the window is destroyed.
+// Subclass WndProc: handle WM_PAINT from our DIB; remap mouse coords when
+// scaling is active; suppress WM_ACTIVATEAPP deactivation so the game's
+// rendering-enable bit (bit 0) stays set in windowed mode; force-quit when
+// the window is destroyed.
 static LRESULT CALLBACK ShimWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    // Remap mouse coordinates from window space back to game (640x480) space
+    // whenever the window is larger than the native game resolution.
+    switch (msg) {
+    case WM_MOUSEMOVE:
+    case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK:
+    case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_RBUTTONDBLCLK:
+    case WM_MBUTTONDOWN: case WM_MBUTTONUP: case WM_MBUTTONDBLCLK:
+        lp = RemapMouseCoord(lp);
+        break;
+    }
     if (msg == WM_PAINT) {
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
