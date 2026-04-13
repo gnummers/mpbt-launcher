@@ -112,6 +112,12 @@ static int     g_dispW = 640;
 static int     g_dispH = 480;
 static int     g_bpp   = 8;
 
+// Target window dimensions read from ddraw.ini (0 = use game resolution)
+static int     g_targetW = 0;
+static int     g_targetH = 0;
+// True when the window should cover the full monitor without chrome
+static bool    g_borderlessFullscreen = false;
+
 // Shared back-buffer DIB (primary + back surface both refer here)
 static DibBuf  g_backDib;
 
@@ -122,8 +128,122 @@ static RGBQUAD g_pal[256];
 static WNDPROC g_origWndProc = nullptr;
 
 // ============================================================================
+// Config reader — parses ddraw.ini placed alongside the game EXE
+// ============================================================================
+
+static void ReadConfig() {
+    // Derive ini path from the game process EXE directory.
+    char exePath[MAX_PATH] = {};
+    GetModuleFileNameA(NULL, exePath, sizeof(exePath));
+    char* lastSep = strrchr(exePath, '\\');
+    if (!lastSep) return;
+    *(lastSep + 1) = '\0'; // keep trailing backslash
+
+    char cfgPath[MAX_PATH];
+    _snprintf(cfgPath, sizeof(cfgPath) - 1, "%sddraw.ini", exePath);
+    cfgPath[sizeof(cfgPath) - 1] = '\0';
+
+    char modeBuf[64] = {};
+    GetPrivateProfileStringA("display", "mode", "", modeBuf, sizeof(modeBuf), cfgPath);
+    if (_stricmp(modeBuf, "fullscreen-window") == 0) {
+        g_borderlessFullscreen = true;
+        g_targetW = GetSystemMetrics(SM_CXSCREEN);
+        g_targetH = GetSystemMetrics(SM_CYSCREEN);
+        DbLog("ReadConfig: fullscreen-window %dx%d", g_targetW, g_targetH);
+        return;
+    }
+
+    char wBuf[32] = {}, hBuf[32] = {};
+    GetPrivateProfileStringA("display", "width",  "0", wBuf, sizeof(wBuf), cfgPath);
+    GetPrivateProfileStringA("display", "height", "0", hBuf, sizeof(hBuf), cfgPath);
+    g_targetW = atoi(wBuf);
+    g_targetH = atoi(hBuf);
+    if (g_targetW > 0 && g_targetH > 0)
+        DbLog("ReadConfig: windowed %dx%d", g_targetW, g_targetH);
+    else
+        DbLog("ReadConfig: no scaling (game resolution)");
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
+
+// Compute the destination rectangle for an aspect-correct scaled blit of
+// (srcW x srcH) into a window of (winW x winH).
+struct ScaleRect { int x, y, w, h; };
+static ScaleRect ComputeScaleRect(int srcW, int srcH, int winW, int winH) {
+    double scaleX = (double)winW / srcW;
+    double scaleY = (double)winH / srcH;
+    double scale  = (scaleX < scaleY) ? scaleX : scaleY;
+    ScaleRect r;
+    r.w = (int)(srcW * scale);
+    r.h = (int)(srcH * scale);
+    r.x = (winW - r.w) / 2;
+    r.y = (winH - r.h) / 2;
+    return r;
+}
+
+// Render the current back-buffer to an arbitrary DC, scaling to (winW x winH)
+// with aspect-correct letterboxing (black bars) if needed.
+static void RenderToHDC(HDC wdc, int winW, int winH) {
+    if (!g_backDib.hdc) return;
+    int srcW = g_backDib.w, srcH = g_backDib.h;
+    if (winW <= 0) winW = srcW;
+    if (winH <= 0) winH = srcH;
+
+    if (winW == srcW && winH == srcH) {
+        // 1:1 — plain fast copy
+        BitBlt(wdc, 0, 0, srcW, srcH, g_backDib.hdc, 0, 0, SRCCOPY);
+        return;
+    }
+
+    ScaleRect dst = ComputeScaleRect(srcW, srcH, winW, winH);
+
+    // Fill letterbox bars with black
+    HBRUSH black = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    if (dst.x > 0) {
+        RECT r1 = {0, 0, dst.x, winH};
+        RECT r2 = {dst.x + dst.w, 0, winW, winH};
+        FillRect(wdc, &r1, black);
+        FillRect(wdc, &r2, black);
+    }
+    if (dst.y > 0) {
+        RECT r1 = {0, 0, winW, dst.y};
+        RECT r2 = {0, dst.y + dst.h, winW, winH};
+        FillRect(wdc, &r1, black);
+        FillRect(wdc, &r2, black);
+    }
+
+    SetStretchBltMode(wdc, HALFTONE);
+    SetBrushOrgEx(wdc, 0, 0, nullptr);
+    StretchBlt(wdc, dst.x, dst.y, dst.w, dst.h,
+               g_backDib.hdc, 0, 0, srcW, srcH, SRCCOPY);
+}
+
+// Transform a window-space mouse coordinate back to game (640x480) space.
+// Returns the remapped lParam; if outside the game area the coordinate is
+// clamped to the nearest edge so the game always receives a valid position.
+static LPARAM RemapMouseCoord(LPARAM lp) {
+    int winW = (g_targetW > 0) ? g_targetW : g_dispW;
+    int winH = (g_targetH > 0) ? g_targetH : g_dispH;
+    // No scaling active — pass through unchanged.
+    if (winW == g_dispW && winH == g_dispH) return lp;
+
+    int mx = (int)(short)LOWORD(lp);
+    int my = (int)(short)HIWORD(lp);
+
+    ScaleRect dst = ComputeScaleRect(g_dispW, g_dispH, winW, winH);
+
+    // Map from window coords into game coords
+    int gx = (dst.w > 0) ? (mx - dst.x) * g_dispW / dst.w : 0;
+    int gy = (dst.h > 0) ? (my - dst.y) * g_dispH / dst.h : 0;
+
+    // Clamp to valid game area
+    if (gx < 0) gx = 0; else if (gx >= g_dispW) gx = g_dispW - 1;
+    if (gy < 0) gy = 0; else if (gy >= g_dispH) gy = g_dispH - 1;
+
+    return MAKELPARAM(gx, gy);
+}
 
 // Known addresses inside MPBTWIN.EXE (.data segment, image base 0x00400000)
 #define GAME_FLAGS_ADDR    ((volatile DWORD*)0x0047a7c8)  // bit0=render enabled, bit1=quit
@@ -146,25 +266,37 @@ static void BlitToWindow() {
         DbLog("BTW #%d  state=%d flags=0x%08x guard=0x%x sprites=%d prim_center=0x%02x",
               s_btwCount, (int)state, (unsigned)flags, (unsigned)guard, (int)sprites, (unsigned)cpx);
     }
+    int winW = (g_targetW > 0) ? g_targetW : g_backDib.w;
+    int winH = (g_targetH > 0) ? g_targetH : g_backDib.h;
     HDC wdc = GetDC(g_hwnd);
-    BitBlt(wdc, 0, 0, g_backDib.w, g_backDib.h,
-           g_backDib.hdc, 0, 0, SRCCOPY);
+    RenderToHDC(wdc, winW, winH);
     ReleaseDC(g_hwnd, wdc);
 }
 
 // Bit 1 of the flags word is the WinMain quit flag.
 #define GAME_FLAGS_ADDR_QUIT_BIT 0x02
 
-// Subclass WndProc: handle WM_PAINT from our DIB; suppress WM_ACTIVATEAPP
-// deactivation so the game's rendering-enable bit (bit 0) stays set in
-// windowed mode; force-quit when the window is destroyed.
+// Subclass WndProc: handle WM_PAINT from our DIB; remap mouse coords when
+// scaling is active; suppress WM_ACTIVATEAPP deactivation so the game's
+// rendering-enable bit (bit 0) stays set in windowed mode; force-quit when
+// the window is destroyed.
 static LRESULT CALLBACK ShimWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    // Remap mouse coordinates from window space back to game (640x480) space
+    // whenever the window is larger than the native game resolution.
+    switch (msg) {
+    case WM_MOUSEMOVE:
+    case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK:
+    case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_RBUTTONDBLCLK:
+    case WM_MBUTTONDOWN: case WM_MBUTTONUP: case WM_MBUTTONDBLCLK:
+        lp = RemapMouseCoord(lp);
+        break;
+    }
     if (msg == WM_PAINT) {
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
-        if (g_backDib.hdc)
-            BitBlt(hdc, 0, 0, g_backDib.w, g_backDib.h,
-                   g_backDib.hdc, 0, 0, SRCCOPY);
+        int winW = (g_targetW > 0) ? g_targetW : g_backDib.w;
+        int winH = (g_targetH > 0) ? g_targetH : g_backDib.h;
+        RenderToHDC(hdc, winW, winH);
         EndPaint(hwnd, &ps);
         return 0;
     }
@@ -678,19 +810,32 @@ public:
         DbLog("SetCooperativeLevel hwnd=0x%p", (void*)hwnd);
         g_hwnd = hwnd;
 
-        // Restyle the game's window: remove popup/exclusive style, add normal chrome
-        LONG style = GetWindowLongA(hwnd, GWL_STYLE);
-        style &= ~(WS_POPUP | WS_DLGFRAME);
-        style |= WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-        SetWindowLongA(hwnd, GWL_STYLE, style);
-        SetWindowLongA(hwnd, GWL_EXSTYLE, 0);
+        int wndW = (g_targetW > 0) ? g_targetW : g_dispW;
+        int wndH = (g_targetH > 0) ? g_targetH : g_dispH;
 
-        // Size the window so the client area exactly fits the display resolution
-        RECT r = { 0, 0, g_dispW, g_dispH };
-        AdjustWindowRect(&r, (DWORD)style, FALSE);
-        SetWindowPos(hwnd, HWND_TOP, CW_USEDEFAULT, CW_USEDEFAULT,
-                     r.right - r.left, r.bottom - r.top,
-                     SWP_NOMOVE | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        if (g_borderlessFullscreen) {
+            // Borderless fullscreen: no title bar, no chrome, covers the whole monitor
+            LONG style = GetWindowLongA(hwnd, GWL_STYLE);
+            style &= ~(WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME | WS_DLGFRAME);
+            style |= WS_POPUP;
+            SetWindowLongA(hwnd, GWL_STYLE, style);
+            SetWindowLongA(hwnd, GWL_EXSTYLE, 0);
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, wndW, wndH,
+                         SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        } else {
+            // Normal windowed mode
+            LONG style = GetWindowLongA(hwnd, GWL_STYLE);
+            style &= ~(WS_POPUP | WS_DLGFRAME);
+            style |= WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+            SetWindowLongA(hwnd, GWL_STYLE, style);
+            SetWindowLongA(hwnd, GWL_EXSTYLE, 0);
+
+            RECT r = { 0, 0, wndW, wndH };
+            AdjustWindowRect(&r, (DWORD)style, FALSE);
+            SetWindowPos(hwnd, HWND_TOP, CW_USEDEFAULT, CW_USEDEFAULT,
+                         r.right - r.left, r.bottom - r.top,
+                         SWP_NOMOVE | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        }
 
         // Bring window to foreground so the game receives WM_ACTIVATEAPP(1).
         // The game's WndProc sets DAT_0047a7c8 bit 0 on that message; all
@@ -717,8 +862,9 @@ public:
         DbLog("SetDisplayMode %dx%dx%d", (int)w, (int)h, (int)bpp);
         g_dispW = (int)w; g_dispH = (int)h; g_bpp = (int)bpp;
 
-        // Resize the window client area to match
-        if (g_hwnd) {
+        // Only resize the window when no target scaling is configured;
+        // SetCooperativeLevel already set the window to the target size.
+        if (g_hwnd && g_targetW == 0) {
             LONG style = GetWindowLongA(g_hwnd, GWL_STYLE);
             RECT r = { 0, 0, (LONG)w, (LONG)h };
             AdjustWindowRect(&r, (DWORD)style, FALSE);
@@ -815,9 +961,23 @@ static void PatchGameIAT()
     }
 }
 
+// True once ReadConfig() has been called (guards against multiple calls).
+static bool g_configLoaded = false;
+
+// Ensure config is loaded exactly once.  Safe to call from any context
+// (DirectDrawCreate, SetCooperativeLevel) because by that point the loader
+// lock is no longer held.
+static void EnsureConfig() {
+    if (g_configLoaded) return;
+    g_configLoaded = true;
+    ReadConfig();
+}
+
 BOOL WINAPI DllMain(HINSTANCE, DWORD fdwReason, LPVOID)
 {
     if (fdwReason == DLL_PROCESS_ATTACH) {
+        // Keep DllMain minimal — no file I/O here.
+        // Config is loaded lazily on the first DirectDrawCreate call.
         DbLog("ddraw_shim loaded");
         PatchGameIAT();
     }
@@ -833,6 +993,7 @@ extern "C" {
 HRESULT WINAPI DirectDrawCreate(GUID* lpGUID, LPDIRECTDRAW* lplpDD,
                                  IUnknown* pUnkOuter) {
     if (!lplpDD) return DDERR_INVALIDPARAMS;
+    EnsureConfig();
     *lplpDD = new FakeDD();
     return S_OK;
 }
