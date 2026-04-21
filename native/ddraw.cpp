@@ -111,12 +111,55 @@ static HWND    g_hwnd  = nullptr;
 static int     g_dispW = 640;
 static int     g_dispH = 480;
 static int     g_bpp   = 8;
+static int     g_fpsLimit = 0;
 
 // Target window dimensions read from ddraw.ini (0 = use game resolution)
 static int     g_targetW = 0;
 static int     g_targetH = 0;
 // True when the window should cover the full monitor without chrome
 static bool    g_borderlessFullscreen = false;
+// True when the shim should switch the desktop to the requested game mode and
+// present through a fullscreen popup window.
+static bool    g_nativeFullscreen = false;
+static bool    g_changedDisplayMode = false;
+
+static void RestoreNativeDisplayMode() {
+    if (!g_changedDisplayMode) return;
+    ChangeDisplaySettingsA(nullptr, 0);
+    g_changedDisplayMode = false;
+}
+
+static void EnterNativeDisplayMode() {
+    if (!g_nativeFullscreen || g_changedDisplayMode) return;
+
+    DEVMODEA dm = {};
+    dm.dmSize = sizeof(dm);
+    dm.dmPelsWidth = (DWORD)g_dispW;
+    dm.dmPelsHeight = (DWORD)g_dispH;
+    dm.dmBitsPerPel = 32;
+    dm.dmDisplayFrequency = 60;
+    dm.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL | DM_DISPLAYFREQUENCY;
+
+    LONG result = ChangeDisplaySettingsA(&dm, CDS_FULLSCREEN);
+    if (result != DISP_CHANGE_SUCCESSFUL) {
+        dm.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL;
+        result = ChangeDisplaySettingsA(&dm, CDS_FULLSCREEN);
+    }
+    if (result != DISP_CHANGE_SUCCESSFUL) {
+        dm.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT;
+        result = ChangeDisplaySettingsA(&dm, CDS_FULLSCREEN);
+    }
+
+    if (result == DISP_CHANGE_SUCCESSFUL) {
+        g_changedDisplayMode = true;
+        g_targetW = GetSystemMetrics(SM_CXSCREEN);
+        g_targetH = GetSystemMetrics(SM_CYSCREEN);
+        DbLog("EnterNativeDisplayMode: %dx%d fps_limit=%d", g_targetW, g_targetH, g_fpsLimit);
+    } else {
+        g_nativeFullscreen = false;
+        DbLog("EnterNativeDisplayMode failed: result=%ld; falling back to current desktop mode", result);
+    }
+}
 
 // Shared back-buffer DIB (primary + back surface both refer here)
 static DibBuf  g_backDib;
@@ -144,12 +187,22 @@ static void ReadConfig() {
     cfgPath[sizeof(cfgPath) - 1] = '\0';
 
     char modeBuf[64] = {};
+    char fpsBuf[32] = {};
     GetPrivateProfileStringA("display", "mode", "", modeBuf, sizeof(modeBuf), cfgPath);
+    GetPrivateProfileStringA("display", "fps_limit", "0", fpsBuf, sizeof(fpsBuf), cfgPath);
+    g_fpsLimit = atoi(fpsBuf);
+    if (_stricmp(modeBuf, "fullscreen-native") == 0) {
+        g_nativeFullscreen = true;
+        g_targetW = GetSystemMetrics(SM_CXSCREEN);
+        g_targetH = GetSystemMetrics(SM_CYSCREEN);
+        DbLog("ReadConfig: fullscreen-native %dx%d fps_limit=%d", g_targetW, g_targetH, g_fpsLimit);
+        return;
+    }
     if (_stricmp(modeBuf, "fullscreen-window") == 0) {
         g_borderlessFullscreen = true;
         g_targetW = GetSystemMetrics(SM_CXSCREEN);
         g_targetH = GetSystemMetrics(SM_CYSCREEN);
-        DbLog("ReadConfig: fullscreen-window %dx%d", g_targetW, g_targetH);
+        DbLog("ReadConfig: fullscreen-window %dx%d fps_limit=%d", g_targetW, g_targetH, g_fpsLimit);
         return;
     }
 
@@ -159,9 +212,53 @@ static void ReadConfig() {
     g_targetW = atoi(wBuf);
     g_targetH = atoi(hBuf);
     if (g_targetW > 0 && g_targetH > 0)
-        DbLog("ReadConfig: windowed %dx%d", g_targetW, g_targetH);
+        DbLog("ReadConfig: windowed %dx%d fps_limit=%d", g_targetW, g_targetH, g_fpsLimit);
     else
-        DbLog("ReadConfig: no scaling (game resolution)");
+        DbLog("ReadConfig: no scaling (game resolution) fps_limit=%d", g_fpsLimit);
+}
+
+static bool ShouldPresentNow() {
+    if (g_fpsLimit <= 0) return true;
+
+    static LARGE_INTEGER s_freq = {};
+    static LARGE_INTEGER s_lastPresent = {};
+    static bool s_ready = false;
+
+    if (!s_ready) {
+        if (!QueryPerformanceFrequency(&s_freq) || s_freq.QuadPart <= 0) {
+            return true;
+        }
+        QueryPerformanceCounter(&s_lastPresent);
+        s_ready = true;
+        return true;
+    }
+
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+
+    const LONGLONG frameInterval =
+        (s_freq.QuadPart + (g_fpsLimit / 2)) / g_fpsLimit;
+    const LONGLONG burstThreshold =
+        (s_freq.QuadPart + 499) / 500; // about 2 ms
+
+    LONGLONG elapsed = now.QuadPart - s_lastPresent.QuadPart;
+    if (elapsed >= 0 && elapsed < burstThreshold) {
+        return false;
+    }
+
+    if (elapsed >= 0 && elapsed < frameInterval) {
+        DWORD sleepMs = (DWORD)(((frameInterval - elapsed) * 1000) / s_freq.QuadPart);
+        if (sleepMs > 1) {
+            Sleep(sleepMs - 1);
+        }
+        do {
+            QueryPerformanceCounter(&now);
+            elapsed = now.QuadPart - s_lastPresent.QuadPart;
+        } while (elapsed < frameInterval);
+    }
+
+    s_lastPresent = now;
+    return true;
 }
 
 // ============================================================================
@@ -253,6 +350,7 @@ static LPARAM RemapMouseCoord(LPARAM lp) {
 
 static void BlitToWindow() {
     if (!g_hwnd || !g_backDib.hdc) return;
+    if (!ShouldPresentNow()) return;
     static int s_btwCount = 0;
     ++s_btwCount;
     if (s_btwCount % 50 == 0) {
@@ -315,6 +413,7 @@ static LRESULT CALLBACK ShimWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     // WM_DESTROY: force the game's quit flag so the WinMain loop exits.
     if (msg == WM_DESTROY) {
         DbLog("WM_DESTROY: setting game quit flag");
+        RestoreNativeDisplayMode();
         *GAME_FLAGS_ADDR |= GAME_FLAGS_ADDR_QUIT_BIT;
     }
     return CallWindowProcA(g_origWndProc, hwnd, msg, wp, lp);
@@ -810,11 +909,15 @@ public:
         DbLog("SetCooperativeLevel hwnd=0x%p", (void*)hwnd);
         g_hwnd = hwnd;
 
+        if (g_nativeFullscreen) {
+            EnterNativeDisplayMode();
+        }
+
         int wndW = (g_targetW > 0) ? g_targetW : g_dispW;
         int wndH = (g_targetH > 0) ? g_targetH : g_dispH;
 
-        if (g_borderlessFullscreen) {
-            // Borderless fullscreen: no title bar, no chrome, covers the whole monitor
+        if (g_borderlessFullscreen || g_nativeFullscreen) {
+            // Fullscreen shim modes: no title bar, no chrome, cover the monitor.
             LONG style = GetWindowLongA(hwnd, GWL_STYLE);
             style &= ~(WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME | WS_DLGFRAME);
             style |= WS_POPUP;
@@ -861,6 +964,10 @@ public:
     HRESULT STDMETHODCALLTYPE SetDisplayMode(DWORD w, DWORD h, DWORD bpp) override {
         DbLog("SetDisplayMode %dx%dx%d", (int)w, (int)h, (int)bpp);
         g_dispW = (int)w; g_dispH = (int)h; g_bpp = (int)bpp;
+
+        if (g_nativeFullscreen) {
+            EnterNativeDisplayMode();
+        }
 
         // Only resize the window when no target scaling is configured;
         // SetCooperativeLevel already set the window to the target size.
@@ -980,6 +1087,8 @@ BOOL WINAPI DllMain(HINSTANCE, DWORD fdwReason, LPVOID)
         // Config is loaded lazily on the first DirectDrawCreate call.
         DbLog("ddraw_shim loaded");
         PatchGameIAT();
+    } else if (fdwReason == DLL_PROCESS_DETACH) {
+        RestoreNativeDisplayMode();
     }
     return TRUE;
 }

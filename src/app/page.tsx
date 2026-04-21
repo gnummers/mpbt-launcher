@@ -13,7 +13,7 @@ interface ClientConfig {
 }
 
 const DISPLAY_MODES = [
-  { value: "fullscreen",        label: "Fullscreen (640×480 native)" },
+  { value: "fullscreen",        label: "Fullscreen (640×480 native, 60 FPS capped)" },
   { value: "window-640x480",    label: "Windowed 640×480" },
   { value: "window-1024x768",   label: "Windowed 1024×768" },
   { value: "window-1280x960",   label: "Windowed 1280×960" },
