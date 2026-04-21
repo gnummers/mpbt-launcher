@@ -26,6 +26,8 @@
 // initguid.h causes GUIDs to be defined inline (no dxguid.lib required)
 #include <initguid.h>
 #include <ddraw.h>
+#include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <cstdio>
 #include <cstdarg>
@@ -129,6 +131,23 @@ static void RestoreNativeDisplayMode() {
     g_changedDisplayMode = false;
 }
 
+static int ParseFpsLimit(const char* text) {
+    if (!text) return 0;
+
+    while (*text == ' ' || *text == '\t') ++text;
+    if (*text == '\0') return 0;
+
+    errno = 0;
+    char* end = nullptr;
+    long parsed = strtol(text, &end, 10);
+    while (*end == ' ' || *end == '\t') ++end;
+
+    if (text == end || *end != '\0' || errno == ERANGE || parsed < 1 || parsed > 240) {
+        return 0;
+    }
+    return (int)parsed;
+}
+
 static void EnterNativeDisplayMode() {
     if (!g_nativeFullscreen || g_changedDisplayMode) return;
 
@@ -190,7 +209,7 @@ static void ReadConfig() {
     char fpsBuf[32] = {};
     GetPrivateProfileStringA("display", "mode", "", modeBuf, sizeof(modeBuf), cfgPath);
     GetPrivateProfileStringA("display", "fps_limit", "0", fpsBuf, sizeof(fpsBuf), cfgPath);
-    g_fpsLimit = atoi(fpsBuf);
+    g_fpsLimit = ParseFpsLimit(fpsBuf);
     if (_stricmp(modeBuf, "fullscreen-native") == 0) {
         g_nativeFullscreen = true;
         g_targetW = GetSystemMetrics(SM_CXSCREEN);
@@ -1087,8 +1106,6 @@ BOOL WINAPI DllMain(HINSTANCE, DWORD fdwReason, LPVOID)
         // Config is loaded lazily on the first DirectDrawCreate call.
         DbLog("ddraw_shim loaded");
         PatchGameIAT();
-    } else if (fdwReason == DLL_PROCESS_DETACH) {
-        RestoreNativeDisplayMode();
     }
     return TRUE;
 }
