@@ -335,6 +335,9 @@ export default function LauncherPage() {
                       <option key={m.value} value={m.value}>{m.label}</option>
                     ))}
                   </select>
+                  <p className="text-xs text-neutral-500">
+                    All display modes are capped at 60 FPS.
+                  </p>
                 </div>
                 <Field
                   label="Web URL"
