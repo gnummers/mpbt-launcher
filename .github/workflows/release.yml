@@ -1,5 +1,7 @@
 # Builds the MPBT Launcher and publishes a GitHub Release with the Windows
-# installer.  Triggered by every push to master (i.e. merged PR).
+# installer.  Runs after the Version bump workflow completes so the build
+# always picks up the bumped version.  workflow_dispatch bypasses the chain
+# for manual releases.
 #
 # Required repository secrets (Settings → Secrets and variables → Actions):
 #   PROD_WEB_URL   — website base URL, e.g. "https://play-solaris.com"
@@ -12,25 +14,12 @@
 name: Release
 
 on:
-  push:
+  # Run after version-bump completes so the release always uses the bumped version.
+  # workflow_dispatch bypasses the chain for manual releases.
+  workflow_run:
+    workflows: [Version bump]
+    types: [completed]
     branches: [master]
-    paths:
-      # Rust source and config
-      - 'src-tauri/src/**'
-      - 'src-tauri/Cargo.toml'
-      - 'src-tauri/Cargo.lock'
-      - 'src-tauri/tauri.conf.json'
-      - 'src-tauri/build.rs'
-      - 'src-tauri/icons/**'
-      # Frontend source
-      - 'src/**'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'next.config.*'
-      - 'tsconfig*.json'
-      - 'tailwind.config.*'
-      # Native DLL build
-      - 'windowed/**'
   workflow_dispatch:
 
 permissions:
@@ -39,6 +28,9 @@ permissions:
 jobs:
   release:
     runs-on: windows-latest
+    # For workflow_run: only release when version-bump succeeded.
+    # workflow_dispatch always runs (no workflow_run event present).
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
 
     steps:
       # ── Source ──────────────────────────────────────────────────────────────
@@ -46,8 +38,8 @@ jobs:
         uses: actions/checkout@v4
 
       # ── Derive version tag from tauri.conf.json ───────────────────────────
-      # The version-bump workflow keeps all config files in sync on PR open,
-      # so tauri.conf.json is always the source of truth after a merge.
+      # The version-bump workflow runs on push to master (squash-merge), so
+      # tauri.conf.json is always the source of truth by the time this runs.
       # tauri-action will create this tag in the repo and attach the release to it.
       - name: Read version
         id: version
